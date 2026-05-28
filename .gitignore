@@ -26,7 +26,14 @@ go.work.sum
 
 # env file
 .env
-
+/samples
+# Built binary (top-level only; cmd/db-k8s/ is the source)
+/db-k8s
+# Default database and report output
+/db-k8s.db
+/db-k8s-report/
+# Pre-fetched Go toolchain tarball
+/go1.*.tar.gz
 # Editor/IDE
 # .idea/
 # .vscode/
