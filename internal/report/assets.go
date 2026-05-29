@@ -292,6 +292,115 @@ footer.site {
 .btn:hover { background: var(--accent-soft); text-decoration: none; }
 
 .toolbar select.filter-sev { padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; font-size: 14px; }
+
+/* Line anchors for rendered text files */
+pre.code.numbered { counter-reset: linecounter; padding-left: 0; }
+pre.code.numbered span.ln {
+  display: block;
+  counter-increment: linecounter;
+  padding-left: 56px;
+  position: relative;
+  min-height: 1.4em;
+}
+pre.code.numbered span.ln::before {
+  content: counter(linecounter);
+  position: absolute;
+  left: 0;
+  width: 44px;
+  padding-right: 8px;
+  text-align: right;
+  color: var(--muted);
+  font-size: 11px;
+  user-select: none;
+}
+pre.code.numbered span.ln:target {
+  background: #fff7c2;
+  outline: 2px solid #facc15;
+}
+
+/* PXC timeline */
+section.tl-dump { margin-bottom: 32px; }
+section.tl-dump h4 { font-size: 14px; color: var(--muted); margin-top: 18px; }
+.node-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.node-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.node-card .node-name {
+  font-weight: 600;
+  margin-bottom: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+.node-card dl {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 2px 8px;
+  margin: 0;
+  font-size: 12px;
+}
+.node-card dt { color: var(--muted); }
+.node-card dd { margin: 0; }
+.value.small, .mono.small { font-size: 12px; }
+
+.tl-filter { gap: 10px; flex-wrap: wrap; }
+.tl-filter label { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; }
+.tl-wrap { overflow-x: auto; }
+table.tl-table {
+  table-layout: fixed;
+  min-width: 100%;
+  border-radius: 8px;
+}
+table.tl-table th, table.tl-table td {
+  vertical-align: top;
+  font-size: 13px;
+  border-right: 1px solid var(--line);
+}
+table.tl-table th:last-child, table.tl-table td:last-child { border-right: none; }
+table.tl-table th:first-child, table.tl-table td:first-child { width: 200px; }
+.tl-cell { padding: 6px 8px; }
+.tl-evt {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  padding: 6px 8px;
+  margin-bottom: 4px;
+}
+.tl-evt > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.tl-evt > summary::-webkit-details-marker { display: none; }
+.tl-summary { font-size: 12px; }
+.tl-evt-body { margin-top: 6px; }
+.tl-evt-meta { display: flex; gap: 10px; font-size: 12px; color: var(--muted); margin-bottom: 6px; flex-wrap: wrap; }
+.tl-evt-body pre.code { font-size: 12px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; }
+
+.evt {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--code-bg);
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.tl-evt.sev-warning { border-color: #fed7aa; background: #fff7ed; }
+.tl-evt.sev-error, .tl-evt.sev-critical { border-color: #fecaca; background: #fef2f2; }
+.tl-evt.sev-info { border-color: #bfdbfe; }
+.muted { color: var(--muted); font-size: 13px; }
 `
 
 const scriptJS = `
@@ -367,10 +476,74 @@ function attachConcernsFilter() {
   apply();
 }
 
+function attachTimelineFilters() {
+  var transferTypes = {
+    sst_started: 1, sst_progress: 1, sst_completed: 1, sst_sent: 1,
+    ist_requested: 1, ist_started: 1, ist_completed: 1,
+    state_transfer_requested: 1, state_transfer_completed: 1,
+    donor_selected: 1, donor_desynced: 1, donor_joined: 1
+  };
+  var readyTypes = {
+    mysql_ready: 1, admin_ready: 1, wsrep_ready: 1,
+    member_synced: 1, member_joined: 1, server_status_change: 1
+  };
+  Array.prototype.forEach.call(document.querySelectorAll('form.tl-filter'), function (form) {
+    var sectionId = form.getAttribute('data-target-section');
+    var section = document.getElementById(sectionId);
+    if (!section) return;
+    var input = form.querySelector('input[type=search]');
+    var sev = form.querySelector('.tl-sev');
+    var onlyIssues = form.querySelector('.tl-only-issues');
+    var onlyTransfer = form.querySelector('.tl-only-transfer');
+    var onlyReady = form.querySelector('.tl-only-ready');
+    var countEl = form.querySelector('.count');
+    var events = Array.prototype.slice.call(section.querySelectorAll('.tl-evt'));
+    var rows = Array.prototype.slice.call(section.querySelectorAll('tr.tl-row'));
+    function apply() {
+      var q = (input ? input.value : '').toLowerCase();
+      var sv = sev ? sev.value : '';
+      var issues = onlyIssues && onlyIssues.checked;
+      var transfer = onlyTransfer && onlyTransfer.checked;
+      var ready = onlyReady && onlyReady.checked;
+      var shown = 0;
+      events.forEach(function (ev) {
+        var text = ev.getAttribute('data-search') || '';
+        var esev = ev.getAttribute('data-sev') || '';
+        var etype = ev.getAttribute('data-type') || '';
+        var keep = true;
+        if (q && text.indexOf(q) === -1) keep = false;
+        if (sv && esev !== sv) keep = false;
+        if (issues && esev !== 'warning' && esev !== 'error' && esev !== 'critical') keep = false;
+        if (transfer && !transferTypes[etype]) keep = false;
+        if (ready && !readyTypes[etype]) keep = false;
+        ev.style.display = keep ? '' : 'none';
+        if (keep) shown++;
+      });
+      // Hide rows whose every event was filtered out.
+      rows.forEach(function (row) {
+        var any = Array.prototype.some.call(row.querySelectorAll('.tl-evt'), function (e) {
+          return e.style.display !== 'none';
+        });
+        // Always keep the row if no event filter is active (so empty cells remain visible).
+        var filterActive = q || sv || issues || transfer || ready;
+        row.style.display = (!filterActive || any) ? '' : 'none';
+      });
+      if (countEl) countEl.textContent = shown + ' / ' + events.length;
+    }
+    if (input) input.addEventListener('input', apply);
+    if (sev) sev.addEventListener('change', apply);
+    if (onlyIssues) onlyIssues.addEventListener('change', apply);
+    if (onlyTransfer) onlyTransfer.addEventListener('change', apply);
+    if (onlyReady) onlyReady.addEventListener('change', apply);
+    apply();
+  });
+}
+
 document.addEventListener('DOMContentLoaded', function () {
   if (document.getElementById('files-form')) attachSearch('#files-form', '#files-table');
   if (document.getElementById('objects-form')) attachSearch('#objects-form', '#objects-table');
   attachConcernsFilter();
+  attachTimelineFilters();
   attachCopy();
 });
 `

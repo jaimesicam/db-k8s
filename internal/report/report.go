@@ -125,6 +125,21 @@ func Generate(d *db.DB, outDir string) (Stats, error) {
 	}
 	stats.Pages++
 
+	// PXC timeline page (always generated — renders an empty-state notice if
+	// no PXC logs were detected, so the nav link is never broken).
+	dumpRoot := map[int64]string{}
+	for _, dp := range dumps {
+		dumpRoot[dp.ID] = dp.RootName
+	}
+	fileRel := map[int64]string{}
+	for _, f := range files {
+		fileRel[f.ID] = f.RelativePath
+	}
+	if err := writeTimeline(absOut, analysis.PXC, dumpRoot, rawPaths, fileRel, generatedAt); err != nil {
+		return stats, err
+	}
+	stats.Pages++
+
 	for _, dp := range dumps {
 		pageCount, err := writeDumpPage(absOut, d, dp, rawPaths, analysis, generatedAt)
 		if err != nil {
@@ -307,6 +322,12 @@ type indexData struct {
 	Warning     int
 	Info        int
 	TopCritical []findingRow
+
+	PXCDumps    int
+	PXCNodes    int
+	PXCEvents   int
+	PXCWarnings int
+	PXCErrors   int
 }
 
 func writeIndex(outDir string, d *db.DB, dumps []db.Dump, files []db.File,
@@ -325,6 +346,19 @@ func writeIndex(outDir string, d *db.DB, dumps []db.Dump, files []db.File,
 		})
 	}
 	sc := analysis.SeverityCounts()
+	pxcDumps, pxcNodeSet, pxcEvents, pxcWarn, pxcErr := 0, map[string]struct{}{}, 0, 0, 0
+	for _, dt := range analysis.PXC.Dumps {
+		if len(dt.Events) == 0 {
+			continue
+		}
+		pxcDumps++
+		for _, n := range dt.Nodes {
+			pxcNodeSet[fmt.Sprintf("%d|%s", dt.DumpID, n)] = struct{}{}
+		}
+		pxcEvents += len(dt.Events)
+		pxcWarn += dt.WarningCount
+		pxcErr += dt.ErrorCount
+	}
 	data := indexData{
 		Title: "Overview", Nav: "index", AssetBase: "", GeneratedAt: generatedAt,
 		DBPath: d.Path(), TotalDumps: len(dumps),
@@ -334,6 +368,11 @@ func writeIndex(outDir string, d *db.DB, dumps []db.Dump, files []db.File,
 		Warning:  sc[analyze.SeverityWarning],
 		Info:     sc[analyze.SeverityInfo],
 		TopCritical: topFindings(analysis, analyze.SeverityCritical, 5, ""),
+		PXCDumps:    pxcDumps,
+		PXCNodes:    len(pxcNodeSet),
+		PXCEvents:   pxcEvents,
+		PXCWarnings: pxcWarn,
+		PXCErrors:   pxcErr,
 	}
 	return renderToFile(filepath.Join(outDir, "index.html"), tmplIndex, data)
 }
@@ -521,6 +560,8 @@ type dumpPage struct {
 	Warning  int
 	Info     int
 	Findings []findingRow
+
+	HasPXCTimeline bool
 }
 
 func writeDumpPage(outDir string, d *db.DB, dp db.Dump, rawPaths map[int64]string,
@@ -546,6 +587,13 @@ func writeDumpPage(outDir string, d *db.DB, dp db.Dump, rawPaths map[int64]strin
 		}
 		findings = append(findings, toFindingRow(f, "../"))
 	}
+	hasTL := false
+	for _, dt := range analysis.PXC.Dumps {
+		if dt.DumpID == dp.ID && len(dt.Events) > 0 {
+			hasTL = true
+			break
+		}
+	}
 	data := dumpPage{
 		Title: fmt.Sprintf("Dump %d", dp.ID), Nav: "index", AssetBase: "../",
 		GeneratedAt: generatedAt, Dump: dp, FileCount: c, Bytes: b,
@@ -554,6 +602,7 @@ func writeDumpPage(outDir string, d *db.DB, dp db.Dump, rawPaths map[int64]strin
 		Warning:  sc[analyze.SeverityWarning],
 		Info:     sc[analyze.SeverityInfo],
 		Findings: findings,
+		HasPXCTimeline: hasTL,
 	}
 	dst := filepath.Join(outDir, "dumps", fmt.Sprintf("dump-%d.html", dp.ID))
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {

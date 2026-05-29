@@ -109,6 +109,52 @@ func TestSample8_PXC_StateError(t *testing.T) {
 	}
 }
 
+// Sample 11 ships rich PXC node logs (PMM setup, mysqld start, WSREP state
+// changes, SST/IST). The log analyzer should detect three pxc nodes and
+// surface SST + log warning/error concerns.
+func TestSample11_PXC_TimelineFindings(t *testing.T) {
+	res := importAndAnalyze(t, "11")
+	if len(res.PXC.Dumps) == 0 {
+		t.Fatal("expected at least one PXC dump timeline in sample 11")
+	}
+	dt := res.PXC.Dumps[0]
+	wantNodes := map[string]bool{
+		"mysql-mwl-pxc-0": false,
+		"mysql-mwl-pxc-1": false,
+		"mysql-mwl-pxc-2": false,
+	}
+	for _, n := range dt.Nodes {
+		if _, ok := wantNodes[n]; ok {
+			wantNodes[n] = true
+		}
+	}
+	for n, seen := range wantNodes {
+		if !seen {
+			t.Errorf("expected to detect %s in sample 11 timeline; nodes=%v", n, dt.Nodes)
+		}
+	}
+	if dt.SSTCount == 0 {
+		t.Error("expected at least one SST event in sample 11 timeline")
+	}
+	// At least one pxc.sst.detected info finding should surface.
+	sawSST := false
+	sawLogConcern := false
+	for _, f := range res.Findings {
+		if f.Rule == "pxc.sst.detected" {
+			sawSST = true
+		}
+		if f.Rule == "pxc.log.warning" || f.Rule == "pxc.log.error" {
+			sawLogConcern = true
+		}
+	}
+	if !sawSST {
+		t.Error("expected pxc.sst.detected finding for sample 11")
+	}
+	if !sawLogConcern {
+		t.Error("expected pxc.log.warning or pxc.log.error finding for sample 11")
+	}
+}
+
 // Sample 2 (PSMDB) should NOT raise Percona-family findings (baseline is healthy).
 // This guards against future false positives.
 func TestSample2_PSMDB_HealthyBaseline(t *testing.T) {

@@ -17,6 +17,7 @@ import (
 
 	"github.com/db-k8s/db-k8s/internal/db"
 	"github.com/db-k8s/db-k8s/internal/detect"
+	"github.com/db-k8s/db-k8s/internal/pxc"
 )
 
 // Severity ranks how urgently a finding deserves attention.
@@ -67,6 +68,9 @@ type Summary struct {
 type Result struct {
 	FileSummaries map[int64]string // file_id -> summary line
 	Findings      []Finding        // global list, deterministically ordered
+	// PXC holds the per-dump multi-node log timelines. The timeline report
+	// pulls from this; concerns/cli pull from Findings.
+	PXC pxc.AnalysisResult
 }
 
 // FindingsByFile groups findings by file_id for per-file rendering.
@@ -108,7 +112,9 @@ func (r Result) DumpSeverityCounts(dumpID int64) map[Severity]int {
 }
 
 // Run analyzes every YAML file in the database and returns per-file summaries
-// plus a deterministically ordered list of findings.
+// plus a deterministically ordered list of findings. It also parses PXC log
+// files and exposes the timelines via Result.PXC; log-derived findings are
+// folded into Result.Findings so they show up alongside YAML rule findings.
 func Run(d *db.DB) (Result, error) {
 	files, err := d.ListFiles()
 	if err != nil {
@@ -129,8 +135,53 @@ func Run(d *db.DB) (Result, error) {
 		}
 		res.Findings = append(res.Findings, findings...)
 	}
+	// PXC log analysis: parse candidate text files and convert each LogFinding
+	// to an analyze.Finding so the existing concerns plumbing surfaces them.
+	pxcRes, perr := pxc.Analyze(d)
+	if perr == nil {
+		res.PXC = pxcRes
+		for _, lf := range pxcRes.Findings {
+			res.Findings = append(res.Findings, fromPXCFinding(lf))
+		}
+	}
 	sortFindings(res.Findings)
 	return res, nil
+}
+
+func fromPXCFinding(lf pxc.LogFinding) Finding {
+	sev := SeverityInfo
+	switch lf.Severity {
+	case pxc.SevCritical:
+		sev = SeverityCritical
+	case pxc.SevError:
+		sev = SeverityCritical
+	case pxc.SevWarning:
+		sev = SeverityWarning
+	}
+	f := Finding{
+		Severity: sev,
+		Rule:     lf.Rule,
+		Title:    lf.Title,
+		Detail:   lf.Detail,
+		DumpID:   lf.DumpID,
+		FileID:   lf.FileID,
+		Kind:     "PXCLog",
+		Name:     lf.Node,
+		Fields:   map[string]string{},
+	}
+	if lf.Node != "" {
+		f.Fields["node"] = lf.Node
+	}
+	if lf.EventType != "" {
+		f.Fields["event.type"] = lf.EventType
+	}
+	if lf.Timestamp != "" {
+		f.Fields["timestamp"] = lf.Timestamp
+	}
+	if lf.LineNumber > 0 {
+		f.Fields["line"] = fmt.Sprint(lf.LineNumber)
+	}
+	return f
 }
 
 // analyzeFile is the per-file pipeline: decode every YAML document, flatten Lists,

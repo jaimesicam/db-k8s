@@ -18,6 +18,8 @@ func buildPrompt(f Finding) string {
 	switch family(f.Rule) {
 	case "percona":
 		return perconaPrompt(f)
+	case "pxc_log":
+		return pxcLogPrompt(f)
 	case "pod":
 		return podPrompt(f)
 	case "event":
@@ -35,6 +37,16 @@ func buildPrompt(f Finding) string {
 }
 
 func family(rule string) string {
+	// PXC log-derived rules live under pxc.* with a second segment that names
+	// the log subdomain (log, sst, ist, node, timeline) — route them all to
+	// the dedicated pxc_log prompt.
+	if strings.HasPrefix(rule, "pxc.log.") ||
+		strings.HasPrefix(rule, "pxc.sst.") ||
+		strings.HasPrefix(rule, "pxc.ist.") ||
+		strings.HasPrefix(rule, "pxc.node.") ||
+		strings.HasPrefix(rule, "pxc.timeline.") {
+		return "pxc_log"
+	}
 	if i := strings.IndexByte(rule, '.'); i > 0 {
 		switch rule[:i] {
 		case "percona", "pxc", "psmdb", "pg":
@@ -176,6 +188,39 @@ func pvcPrompt(f Finding) string {
 	return b.String()
 }
 
+func pxcLogPrompt(f Finding) string {
+	var b strings.Builder
+	b.WriteString("I'm investigating a Percona XtraDB Cluster log event.\n\n")
+	if f.Name != "" {
+		fmt.Fprintf(&b, "Node: %s\n", f.Name)
+	}
+	writeFields(&b, f, []string{"node", "event.type", "timestamp", "line"})
+	fmt.Fprintf(&b, "Detected rule: %s\n", f.Rule)
+	if f.Detail != "" {
+		fmt.Fprintf(&b, "Excerpt: %s\n", f.Detail)
+	}
+	b.WriteByte('\n')
+	switch f.Rule {
+	case "pxc.log.error":
+		b.WriteString("What does this PXC/Galera/MySQL error typically mean, what are the common root causes, and what should I check next (operator logs, SST settings, network)?")
+	case "pxc.log.warning":
+		b.WriteString("Is this warning expected during bootstrap/SST, or does it indicate a real problem I should fix?")
+	case "pxc.sst.detected":
+		b.WriteString("SST was observed across nodes. What should I verify (donor/joiner roles, completion order, throughput)?")
+	case "pxc.ist.detected":
+		b.WriteString("IST was observed. What does that imply about the gcache and how do I confirm the joiner caught up cleanly?")
+	case "pxc.node.not_ready_in_logs":
+		b.WriteString("This PXC node never logged 'ready for connections'. What are the typical causes — SST failure, restart loops, or a downstream config issue?")
+	case "pxc.node.never_synced":
+		b.WriteString("This PXC node never logged 'Synchronized with group'. What does that indicate about cluster membership and how do I debug it?")
+	case "pxc.timeline.parse_partial":
+		b.WriteString("The PXC timeline parser had to inherit timestamps for some lines. What does that imply about log noise, and is there anything actionable?")
+	default:
+		b.WriteString("What does this typically mean and what should I check next?")
+	}
+	return b.String()
+}
+
 func rbacPrompt(f Finding) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "A %s in my cluster grants wildcard access.\n\n", f.Kind)
@@ -232,6 +277,24 @@ func buildGoogleURL(f Finding) string {
 	}
 
 	switch family(f.Rule) {
+	case "pxc_log":
+		add("Percona XtraDB Cluster")
+		add("Galera")
+		switch f.Rule {
+		case "pxc.log.error":
+			add("error")
+		case "pxc.log.warning":
+			add("warning")
+		case "pxc.sst.detected":
+			add("SST")
+		case "pxc.ist.detected":
+			add("IST")
+		case "pxc.node.not_ready_in_logs":
+			add("ready for connections missing")
+		case "pxc.node.never_synced":
+			add("Synchronized with group missing")
+		}
+		add(messageKeywords(f.Detail))
 	case "percona":
 		add(f.Kind)
 		add(f.Fields["status.state"])

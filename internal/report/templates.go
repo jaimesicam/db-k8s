@@ -25,6 +25,38 @@ var funcs = template.FuncMap{
 		s := template.HTMLEscapeString(sev)
 		return template.HTML(`<span class="sev sev-` + s + `">` + s + `</span>`)
 	},
+	"evtBadge": func(t string) template.HTML {
+		s := template.HTMLEscapeString(t)
+		return template.HTML(`<span class="evt">` + s + `</span>`)
+	},
+	"yesNo": func(b bool) string {
+		if b {
+			return "yes"
+		}
+		return "no"
+	},
+	"numberedLines": numberedLines,
+}
+
+// numberedLines renders text with per-line span anchors (id="line-N") so the
+// PXC timeline and other deep-link sources can scroll to a specific line.
+func numberedLines(s string) template.HTML {
+	if s == "" {
+		return ""
+	}
+	// Strip a single trailing newline so we don't produce a blank final span.
+	if strings.HasSuffix(s, "\n") {
+		s = s[:len(s)-1]
+	}
+	lines := strings.Split(s, "\n")
+	var b strings.Builder
+	b.Grow(len(s) + 32*len(lines))
+	for i, line := range lines {
+		fmt.Fprintf(&b, `<span class="ln" id="line-%d">`, i+1)
+		b.WriteString(template.HTMLEscapeString(line))
+		b.WriteString("</span>\n")
+	}
+	return template.HTML(b.String())
 }
 
 func humanBytes(n int64) string {
@@ -55,6 +87,7 @@ const baseHeader = `<!doctype html>
     <a href="{{.AssetBase}}concerns.html"{{if eq .Nav "concerns"}} class="active"{{end}}>Concerns</a>
     <a href="{{.AssetBase}}files.html"{{if eq .Nav "files"}} class="active"{{end}}>Files</a>
     <a href="{{.AssetBase}}objects.html"{{if eq .Nav "objects"}} class="active"{{end}}>Kubernetes Objects</a>
+    <a href="{{.AssetBase}}pxc-timeline.html"{{if eq .Nav "timeline"}} class="active"{{end}}>PXC Timeline</a>
   </nav>
 </header>
 <main>
@@ -87,6 +120,18 @@ const indexBody = `
   <div class="card"><div class="label">Binary</div><div class="value">{{index .KindCounts "binary"}}</div></div>
   <div class="card"><div class="label">Unknown</div><div class="value">{{index .KindCounts "unknown"}}</div></div>
 </div>
+
+{{if gt .PXCEvents 0}}
+<h3>PXC Timeline</h3>
+<div class="cards">
+  <div class="card"><div class="label">Dumps with PXC logs</div><div class="value">{{.PXCDumps}}</div></div>
+  <div class="card"><div class="label">PXC nodes detected</div><div class="value">{{.PXCNodes}}</div></div>
+  <div class="card"><div class="label">Parsed events</div><div class="value">{{.PXCEvents}}</div></div>
+  <div class="card sev-card warning"><div class="label">Log warnings</div><div class="value">{{.PXCWarnings}}</div></div>
+  <div class="card sev-card critical"><div class="label">Log errors</div><div class="value">{{.PXCErrors}}</div></div>
+</div>
+<p><a href="pxc-timeline.html">Open the side-by-side PXC timeline →</a></p>
+{{end}}
 
 {{if .TopCritical}}
 <h3>Top critical concerns</h3>
@@ -206,6 +251,10 @@ const dumpBody = `
   <div class="card sev-card info"><div class="label">Info</div><div class="value">{{.Info}}</div></div>
 </div>
 
+{{if .HasPXCTimeline}}
+<p><a href="../pxc-timeline.html#tl-dump-{{.Dump.ID}}">View the PXC timeline for this dump →</a></p>
+{{end}}
+
 {{if .Findings}}
 <h3>Concerns ({{len .Findings}})</h3>
 {{template "findings" .Findings}}
@@ -316,7 +365,7 @@ const fileBody = `
 <h3>Content</h3>
 <div class="code-wrap">
   <button class="copy" data-target="file-content">Copy</button>
-  <pre class="code"><code id="file-content">{{.TextContent}}</code></pre>
+  <pre class="code numbered"><code id="file-content">{{numberedLines .TextContent}}</code></pre>
 </div>
 {{else}}
 <div class="notice">
@@ -365,6 +414,115 @@ func mustParse(name, body string) *template.Template {
 	return t
 }
 
+const timelineBody = `
+<h2>PXC Timeline</h2>
+{{if not .Sections}}
+<p>No Percona XtraDB Cluster log activity was detected in any imported dump.</p>
+{{else}}
+<p class="muted">Side-by-side chronological view of PXC, Galera, WSREP, SST/IST, MySQL, and PMM events
+across detected nodes per dump. Events without a parseable timestamp inherit the previous timestamp.</p>
+
+{{range .Sections}}
+<section class="tl-dump" id="tl-dump-{{.DumpID}}-anchor">
+  <h3 id="tl-dump-{{.DumpID}}">Dump {{.DumpID}}{{if .RootName}} — {{.RootName}}{{end}}</h3>
+  <div class="cards">
+    <div class="card"><div class="label">Detected nodes</div><div class="value">{{len .Nodes}}</div></div>
+    <div class="card"><div class="label">Events</div><div class="value">{{.Total}}</div></div>
+    <div class="card"><div class="label">Earliest</div><div class="value mono small">{{.Earliest}}</div></div>
+    <div class="card"><div class="label">Latest</div><div class="value mono small">{{.Latest}}</div></div>
+    <div class="card sev-card warning"><div class="label">Warnings</div><div class="value">{{.Warnings}}</div></div>
+    <div class="card sev-card critical"><div class="label">Errors</div><div class="value">{{.Errors}}</div></div>
+    <div class="card"><div class="label">SST events</div><div class="value">{{.SSTCount}}</div></div>
+    <div class="card"><div class="label">IST events</div><div class="value">{{.ISTCount}}</div></div>
+    <div class="card"><div class="label">Nodes MySQL ready</div><div class="value">{{.NodesMySQLReady}} / {{len .Nodes}}</div></div>
+    <div class="card"><div class="label">Nodes WSREP synced</div><div class="value">{{.NodesWSREP}} / {{len .Nodes}}</div></div>
+  </div>
+  {{if .ParsePartial}}
+  <div class="notice">Some log lines had no parseable timestamp; they were grouped with the previous timestamp.</div>
+  {{end}}
+
+  <h4>Node summary</h4>
+  <div class="node-cards">
+  {{range .NodeCards}}
+    <div class="node-card">
+      <div class="node-name">{{.Name}}</div>
+      <dl>
+        <dt>First seen</dt><dd class="mono small">{{.FirstSeen}}</dd>
+        <dt>Last seen</dt><dd class="mono small">{{.LastSeen}}</dd>
+        <dt>MySQL ready</dt><dd class="mono small">{{.MySQLReady}}</dd>
+        <dt>WSREP ready</dt><dd class="mono small">{{.WSREPReady}}</dd>
+        <dt>Synced</dt><dd class="mono small">{{.SyncedAt}}</dd>
+        <dt>Donor</dt><dd>{{yesNo .ActedAsDonor}}</dd>
+        <dt>Joiner</dt><dd>{{yesNo .ActedAsJoiner}}</dd>
+        <dt>SST</dt><dd>{{yesNo .HasSST}}</dd>
+        <dt>IST</dt><dd>{{yesNo .HasIST}}</dd>
+        <dt>Warnings</dt><dd>{{.Warnings}}</dd>
+        <dt>Errors</dt><dd>{{.Errors}}</dd>
+        <dt>Total events</dt><dd>{{.Total}}</dd>
+      </dl>
+    </div>
+  {{end}}
+  </div>
+
+  <h4>Timeline</h4>
+  <form class="toolbar tl-filter" data-target-section="tl-dump-{{.DumpID}}" onsubmit="return false;">
+    <input type="search" placeholder="Filter by node, event type, summary…" autocomplete="off">
+    <select class="tl-sev">
+      <option value="">All severities</option>
+      <option value="info">Info</option>
+      <option value="warning">Warning</option>
+      <option value="error">Error</option>
+      <option value="critical">Critical</option>
+    </select>
+    <label><input type="checkbox" class="tl-only-issues"> Warnings & errors only</label>
+    <label><input type="checkbox" class="tl-only-transfer"> SST / IST only</label>
+    <label><input type="checkbox" class="tl-only-ready"> Ready / sync only</label>
+    <span class="count"></span>
+  </form>
+  <div class="tl-wrap" id="tl-dump-{{.DumpID}}">
+    <table class="tl-table">
+      <thead>
+        <tr>
+          <th>Time (UTC)</th>
+          {{range .Nodes}}<th>{{.}}</th>{{end}}
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Buckets}}
+        <tr class="tl-row">
+          <td class="mono small">{{.Timestamp}}</td>
+          {{range .Cells}}
+            <td class="tl-cell">
+              {{range .}}
+              <details class="tl-evt sev-{{.Severity}}" data-search="{{.SearchKey}}" data-sev="{{.Severity}}" data-type="{{.EventType}}">
+                <summary>
+                  {{evtBadge .EventType}}
+                  {{if .Severity}}{{sevBadge .Severity}}{{end}}
+                  <span class="tl-summary">{{.Summary}}</span>
+                </summary>
+                <div class="tl-evt-body">
+                  <div class="tl-evt-meta">
+                    <span class="mono small">{{.Timestamp}}</span>
+                    {{if .Component}}<span class="mono small">{{.Component}}</span>{{end}}
+                    <a href="{{.FileHref}}">file · line {{.LineNumber}}</a>
+                    <a href="{{.RawHref}}">raw</a>
+                  </div>
+                  <pre class="code">{{.Raw}}</pre>
+                </div>
+              </details>
+              {{end}}
+            </td>
+          {{end}}
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+{{end}}
+{{end}}
+`
+
 var (
 	tmplIndex    = mustParse("index", indexBody)
 	tmplFiles    = mustParse("files", filesBody)
@@ -372,4 +530,5 @@ var (
 	tmplDump     = mustParse("dump", dumpBody)
 	tmplFile     = mustParse("file", fileBody)
 	tmplConcerns = mustParse("concerns", concernsBody)
+	tmplTimeline = mustParse("timeline", timelineBody)
 )
