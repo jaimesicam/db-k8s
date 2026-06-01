@@ -88,6 +88,7 @@ const baseHeader = `<!doctype html>
     <a href="{{.AssetBase}}files.html"{{if eq .Nav "files"}} class="active"{{end}}>Files</a>
     <a href="{{.AssetBase}}objects.html"{{if eq .Nav "objects"}} class="active"{{end}}>Kubernetes Objects</a>
     <a href="{{.AssetBase}}pxc-timeline.html"{{if eq .Nav "timeline"}} class="active"{{end}}>PXC Timeline</a>
+    <a href="{{.AssetBase}}backups.html"{{if eq .Nav "backups"}} class="active"{{end}}>Backups</a>
   </nav>
 </header>
 <main>
@@ -120,6 +121,19 @@ const indexBody = `
   <div class="card"><div class="label">Binary</div><div class="value">{{index .KindCounts "binary"}}</div></div>
   <div class="card"><div class="label">Unknown</div><div class="value">{{index .KindCounts "unknown"}}</div></div>
 </div>
+
+{{if gt .BackupTotal 0}}
+<h3>Backups</h3>
+<div class="cards">
+  <div class="card"><div class="label">Operations</div><div class="value">{{.BackupTotal}}</div></div>
+  <div class="card sev-card info"><div class="label">Succeeded</div><div class="value">{{.BackupSucceeded}}</div></div>
+  <div class="card sev-card critical"><div class="label">Failed</div><div class="value">{{.BackupFailed}}</div></div>
+  <div class="card sev-card warning"><div class="label">Running</div><div class="value">{{.BackupRunning}}</div></div>
+  <div class="card"><div class="label">Pending</div><div class="value">{{.BackupPending}}</div></div>
+  <div class="card"><div class="label">Unknown</div><div class="value">{{.BackupUnknown}}</div></div>
+</div>
+<p><a href="backups.html">Open the backup summary →</a></p>
+{{end}}
 
 {{if gt .PXCEvents 0}}
 <h3>PXC Timeline</h3>
@@ -254,6 +268,9 @@ const dumpBody = `
 {{if .HasPXCTimeline}}
 <p><a href="../pxc-timeline.html#tl-dump-{{.Dump.ID}}">View the PXC timeline for this dump →</a></p>
 {{end}}
+{{if .HasBackups}}
+<p><a href="../backups.html#bk-dump-{{.Dump.ID}}">View backups for this dump →</a></p>
+{{end}}
 
 {{if .Findings}}
 <h3>Concerns ({{len .Findings}})</h3>
@@ -336,6 +353,21 @@ const fileBody = `
 
 {{if .Summary}}
 <div class="summary-line"><strong>Summary:</strong> {{.Summary}}</div>
+{{end}}
+
+{{if .BackupContributions}}
+<div class="bk-contrib">
+  <strong>Backup timeline contributions:</strong>
+  <ul>
+  {{range .BackupContributions}}
+    <li><a href="../backups.html#op-{{.OpKey}}">{{.Engine}}/{{.Name}}</a>
+        <span class="bk-status bk-{{.Status}}">{{.Status}}</span>
+        {{if .EventList}}<span class="muted">— {{.EventList}}</span>{{end}}
+        {{if .When}}<span class="mono small">@ {{.When}}</span>{{end}}
+    </li>
+  {{end}}
+  </ul>
+</div>
 {{end}}
 
 {{if .Findings}}
@@ -523,6 +555,140 @@ across detected nodes per dump. Events without a parseable timestamp inherit the
 {{end}}
 `
 
+const backupsBody = `
+<h2>Backups</h2>
+{{if not .Sections}}
+<p>No Percona backup or restore objects were detected in any imported dump.</p>
+{{else}}
+<p class="muted">Per-engine view of Percona backup and restore activity, correlated from
+backup CRDs, Kubernetes Jobs/Pods/Events, and backup pod logs.</p>
+
+<div class="cards">
+  <div class="card"><div class="label">Total operations</div><div class="value">{{.Summary.Total}}</div></div>
+  <div class="card sev-card info"><div class="label">Succeeded</div><div class="value">{{.Summary.Succeeded}}</div></div>
+  <div class="card sev-card critical"><div class="label">Failed</div><div class="value">{{.Summary.Failed}}</div></div>
+  <div class="card sev-card warning"><div class="label">Running</div><div class="value">{{.Summary.Running}}</div></div>
+  <div class="card"><div class="label">Pending</div><div class="value">{{.Summary.Pending}}</div></div>
+  <div class="card"><div class="label">Unknown</div><div class="value">{{.Summary.Unknown}}</div></div>
+  <div class="card"><div class="label">Backups</div><div class="value">{{.Summary.Backups}}</div></div>
+  <div class="card"><div class="label">Restores</div><div class="value">{{.Summary.Restores}}</div></div>
+  <div class="card sev-card warning"><div class="label">Log warnings</div><div class="value">{{.Summary.Warnings}}</div></div>
+  <div class="card sev-card critical"><div class="label">Log errors</div><div class="value">{{.Summary.Errors}}</div></div>
+</div>
+
+{{range .Sections}}
+<section class="bk-dump" id="{{.Anchor}}">
+  <h3>Dump {{.DumpID}}{{if .RootName}} — {{.RootName}}{{end}}</h3>
+
+  {{range .Engines}}
+  <h4>{{.Title}}</h4>
+  {{if .Ops}}
+  <table class="bk-ops-table">
+    <thead><tr>
+      <th>Namespace</th><th>Cluster</th><th>Name</th>
+      <th>Status</th><th>Storage</th>
+      <th>Started</th><th>Completed</th><th>Duration</th>
+      <th>Warnings</th><th>Errors</th><th>Source</th>
+    </tr></thead>
+    <tbody>
+    {{range .Ops}}
+    <tr class="bk-op" id="op-{{.OpKey}}" data-search="{{.SearchKey}}" data-engine="{{.Engine}}" data-status="{{.Status}}" data-ns="{{.Namespace}}" data-cluster="{{.Cluster}}">
+      <td>{{.Namespace}}</td>
+      <td>{{.Cluster}}</td>
+      <td class="mono">{{.Name}}</td>
+      <td><span class="bk-status bk-{{.Status}}">{{.Status}}</span></td>
+      <td class="mono small">{{.Storage}}</td>
+      <td class="mono small">{{.Started}}</td>
+      <td class="mono small">{{.Completed}}</td>
+      <td class="mono small">{{.Duration}}</td>
+      <td>{{.Warnings}}</td>
+      <td>{{.Errors}}</td>
+      <td>
+        {{range .SourceFiles}}<a href="{{.Href}}" title="{{.Path}}">file-{{.FileID}}</a> · <a href="{{.RawHref}}">raw</a><br>{{end}}
+      </td>
+    </tr>
+    {{if .Destination}}
+    <tr class="bk-op-dest"><td colspan="11" class="mono small">→ {{.Destination}}</td></tr>
+    {{end}}
+    {{end}}
+    </tbody>
+  </table>
+  {{end}}
+  {{if .Restores}}
+  <p class="muted">Restores</p>
+  <table class="bk-ops-table">
+    <thead><tr>
+      <th>Namespace</th><th>Cluster</th><th>Name</th>
+      <th>Status</th><th>Started</th><th>Completed</th><th>Source</th>
+    </tr></thead>
+    <tbody>
+    {{range .Restores}}
+    <tr class="bk-op" id="op-{{.OpKey}}" data-search="{{.SearchKey}}" data-engine="{{.Engine}}" data-status="{{.Status}}">
+      <td>{{.Namespace}}</td><td>{{.Cluster}}</td>
+      <td class="mono">{{.Name}}</td>
+      <td><span class="bk-status bk-{{.Status}}">{{.Status}}</span></td>
+      <td class="mono small">{{.Started}}</td>
+      <td class="mono small">{{.Completed}}</td>
+      <td>{{range .SourceFiles}}<a href="{{.Href}}">file-{{.FileID}}</a><br>{{end}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{end}}
+  {{end}}
+
+  <h4>Timeline events</h4>
+  <form class="toolbar bk-filter" data-target-section="{{.Anchor}}" onsubmit="return false;">
+    <input type="search" placeholder="Filter by namespace, name, type, summary…" autocomplete="off">
+    <select class="bk-engine">
+      <option value="">All engines</option>
+      <option value="pxc">PXC</option>
+      <option value="postgres">PostgreSQL</option>
+      <option value="mongodb">MongoDB</option>
+      <option value="everest">Everest</option>
+    </select>
+    <select class="bk-status">
+      <option value="">All statuses</option>
+      <option value="Succeeded">Succeeded</option>
+      <option value="Failed">Failed</option>
+      <option value="Running">Running</option>
+      <option value="Pending">Pending</option>
+      <option value="Unknown">Unknown</option>
+    </select>
+    <label><input type="checkbox" class="bk-only-failed"> Failed only</label>
+    <label><input type="checkbox" class="bk-only-running"> Running only</label>
+    <label><input type="checkbox" class="bk-only-issues"> Warnings & errors only</label>
+    <span class="count"></span>
+  </form>
+  <table class="bk-events">
+    <thead><tr>
+      <th>Time (UTC)</th><th>Engine</th><th>Namespace</th><th>Cluster</th>
+      <th>Backup</th><th>Event</th><th>Severity</th><th>Summary</th><th>Source</th>
+    </tr></thead>
+    <tbody>
+    {{range .Events}}
+    <tr class="bk-evt" data-search="{{.SearchKey}}" data-engine="{{.Engine}}" data-sev="{{.Severity}}" data-type="{{.Type}}">
+      <td class="mono small">{{.Timestamp}}</td>
+      <td>{{.Engine}}</td>
+      <td>{{.Namespace}}</td>
+      <td>{{.Cluster}}</td>
+      <td class="mono"><a href="#op-{{.OpKey}}">{{.OpName}}</a></td>
+      <td>{{evtBadge .Type}}</td>
+      <td>{{if .Severity}}{{sevBadge .Severity}}{{end}}</td>
+      <td>{{.Summary}}</td>
+      <td>
+        {{if .LineNumber}}<a href="{{.FileHref}}">line {{.LineNumber}}</a> · {{end}}
+        <a href="{{.RawHref}}">raw</a>
+      </td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}
+{{end}}
+`
+
 var (
 	tmplIndex    = mustParse("index", indexBody)
 	tmplFiles    = mustParse("files", filesBody)
@@ -531,4 +697,5 @@ var (
 	tmplFile     = mustParse("file", fileBody)
 	tmplConcerns = mustParse("concerns", concernsBody)
 	tmplTimeline = mustParse("timeline", timelineBody)
+	tmplBackups  = mustParse("backups", backupsBody)
 )

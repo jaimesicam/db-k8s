@@ -15,6 +15,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/db-k8s/db-k8s/internal/backup"
 	"github.com/db-k8s/db-k8s/internal/db"
 	"github.com/db-k8s/db-k8s/internal/detect"
 	"github.com/db-k8s/db-k8s/internal/pxc"
@@ -71,6 +72,8 @@ type Result struct {
 	// PXC holds the per-dump multi-node log timelines. The timeline report
 	// pulls from this; concerns/cli pull from Findings.
 	PXC pxc.AnalysisResult
+	// Backup holds correlated backup/restore Operations across engines.
+	Backup backup.AnalysisResult
 }
 
 // FindingsByFile groups findings by file_id for per-file rendering.
@@ -144,8 +147,67 @@ func Run(d *db.DB) (Result, error) {
 			res.Findings = append(res.Findings, fromPXCFinding(lf))
 		}
 	}
+	// Backup analysis: correlate backup CRDs + Jobs + Pods + logs into one
+	// per-operation view, fold findings into the concerns pipeline.
+	bkRes, berr := backup.Analyze(d)
+	if berr == nil {
+		res.Backup = bkRes
+		for _, lf := range bkRes.Findings {
+			res.Findings = append(res.Findings, fromBackupFinding(lf))
+		}
+	}
 	sortFindings(res.Findings)
 	return res, nil
+}
+
+func fromBackupFinding(lf backup.LogFinding) Finding {
+	sev := SeverityInfo
+	switch lf.Severity {
+	case backup.SevCritical, backup.SevError:
+		sev = SeverityCritical
+	case backup.SevWarning:
+		sev = SeverityWarning
+	}
+	f := Finding{
+		Severity: sev,
+		Rule:     lf.Rule,
+		Title:    lf.Title,
+		Detail:   lf.Detail,
+		DumpID:   lf.DumpID,
+		FileID:   lf.FileID,
+		Kind:     "Backup",
+		Namespace: lf.Namespace,
+		Name:     lf.Name,
+		Fields:   map[string]string{},
+	}
+	if lf.Engine != "" {
+		f.Fields["engine"] = lf.Engine
+	}
+	if lf.Cluster != "" {
+		f.Fields["cluster"] = lf.Cluster
+	}
+	if lf.Status != "" {
+		f.Fields["status"] = lf.Status
+	}
+	if lf.Storage != "" {
+		f.Fields["storage"] = lf.Storage
+	}
+	if lf.Dest != "" {
+		f.Fields["destination"] = lf.Dest
+	}
+	if lf.Started != "" {
+		f.Fields["started"] = lf.Started
+	}
+	if lf.Completed != "" {
+		f.Fields["completed"] = lf.Completed
+	}
+	if lf.LineNumber > 0 {
+		f.Fields["line"] = fmt.Sprint(lf.LineNumber)
+	}
+	if lf.OpKey != "" {
+		f.Fields["op"] = lf.OpKey
+	}
+	return f
 }
 
 func fromPXCFinding(lf pxc.LogFinding) Finding {

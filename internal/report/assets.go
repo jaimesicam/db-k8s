@@ -401,6 +401,40 @@ table.tl-table th:first-child, table.tl-table td:first-child { width: 200px; }
 .tl-evt.sev-error, .tl-evt.sev-critical { border-color: #fecaca; background: #fef2f2; }
 .tl-evt.sev-info { border-color: #bfdbfe; }
 .muted { color: var(--muted); font-size: 13px; }
+
+/* Backups */
+section.bk-dump { margin-bottom: 32px; }
+section.bk-dump h4 { font-size: 14px; color: var(--muted); margin-top: 18px; }
+table.bk-ops-table, table.bk-events { font-size: 13px; }
+table.bk-ops-table th, table.bk-events th { font-size: 11px; }
+tr.bk-op-dest td { color: var(--muted); border-top: none; padding-top: 0; padding-bottom: 12px; }
+.bk-status {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: white;
+  background: #6b7280;
+}
+.bk-status.bk-Succeeded { background: #16a34a; }
+.bk-status.bk-Failed    { background: #b91c1c; }
+.bk-status.bk-Running   { background: #2461d9; }
+.bk-status.bk-Pending   { background: #b45309; }
+.bk-status.bk-Unknown   { background: #6b7280; }
+
+.bk-contrib {
+  background: var(--accent-soft);
+  border: 1px solid #bcd0f4;
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin: 0 0 18px;
+  font-size: 14px;
+}
+.bk-contrib ul { margin: 6px 0 0 18px; padding: 0; }
+.bk-contrib li { margin: 2px 0; }
 `
 
 const scriptJS = `
@@ -539,11 +573,62 @@ function attachTimelineFilters() {
   });
 }
 
+function attachBackupFilters() {
+  Array.prototype.forEach.call(document.querySelectorAll('form.bk-filter'), function (form) {
+    var sectionId = form.getAttribute('data-target-section');
+    var section = document.getElementById(sectionId);
+    if (!section) return;
+    var input = form.querySelector('input[type=search]');
+    var engSel = form.querySelector('.bk-engine');
+    var stSel = form.querySelector('.bk-status');
+    var onlyFailed = form.querySelector('.bk-only-failed');
+    var onlyRunning = form.querySelector('.bk-only-running');
+    var onlyIssues = form.querySelector('.bk-only-issues');
+    var countEl = form.querySelector('.count');
+    var rows = Array.prototype.slice.call(section.querySelectorAll('tr.bk-evt'));
+    function apply() {
+      var q = (input ? input.value : '').toLowerCase();
+      var eng = engSel ? engSel.value : '';
+      var st = stSel ? stSel.value : '';
+      var ff = onlyFailed && onlyFailed.checked;
+      var rr = onlyRunning && onlyRunning.checked;
+      var ii = onlyIssues && onlyIssues.checked;
+      var shown = 0;
+      rows.forEach(function (row) {
+        var text = row.getAttribute('data-search') || '';
+        var rEng = row.getAttribute('data-engine') || '';
+        var rSev = row.getAttribute('data-sev') || '';
+        var rType = row.getAttribute('data-type') || '';
+        var keep = true;
+        if (q && text.indexOf(q) === -1) keep = false;
+        if (eng && rEng !== eng) keep = false;
+        // status filter applies to row-level evt type containing the status
+        if (st && rType.toLowerCase().indexOf(st.toLowerCase()) === -1 &&
+            row.getAttribute('data-status') !== st) keep = false;
+        if (ff && rType.indexOf('failed') === -1 && rSev !== 'critical' && rSev !== 'error') keep = false;
+        if (rr && rType.indexOf('running') === -1) keep = false;
+        if (ii && rSev !== 'warning' && rSev !== 'error' && rSev !== 'critical') keep = false;
+        row.style.display = keep ? '' : 'none';
+        if (keep) shown++;
+      });
+      if (countEl) countEl.textContent = shown + ' / ' + rows.length;
+    }
+    if (input) input.addEventListener('input', apply);
+    if (engSel) engSel.addEventListener('change', apply);
+    if (stSel) stSel.addEventListener('change', apply);
+    if (onlyFailed) onlyFailed.addEventListener('change', apply);
+    if (onlyRunning) onlyRunning.addEventListener('change', apply);
+    if (onlyIssues) onlyIssues.addEventListener('change', apply);
+    apply();
+  });
+}
+
 document.addEventListener('DOMContentLoaded', function () {
   if (document.getElementById('files-form')) attachSearch('#files-form', '#files-table');
   if (document.getElementById('objects-form')) attachSearch('#objects-form', '#objects-table');
   attachConcernsFilter();
   attachTimelineFilters();
+  attachBackupFilters();
   attachCopy();
 });
 `

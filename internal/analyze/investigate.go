@@ -20,6 +20,8 @@ func buildPrompt(f Finding) string {
 		return perconaPrompt(f)
 	case "pxc_log":
 		return pxcLogPrompt(f)
+	case "backup":
+		return backupPrompt(f)
 	case "pod":
 		return podPrompt(f)
 	case "event":
@@ -46,6 +48,9 @@ func family(rule string) string {
 		strings.HasPrefix(rule, "pxc.node.") ||
 		strings.HasPrefix(rule, "pxc.timeline.") {
 		return "pxc_log"
+	}
+	if strings.HasPrefix(rule, "backup.") || strings.HasPrefix(rule, "restore.") {
+		return "backup"
 	}
 	if i := strings.IndexByte(rule, '.'); i > 0 {
 		switch rule[:i] {
@@ -188,6 +193,63 @@ func pvcPrompt(f Finding) string {
 	return b.String()
 }
 
+func backupPrompt(f Finding) string {
+	var b strings.Builder
+	engineLong := map[string]string{
+		"pxc":      "Percona XtraDB Cluster",
+		"postgres": "Percona PostgreSQL",
+		"mongodb":  "Percona Server for MongoDB",
+		"everest":  "Percona Everest",
+	}[f.Fields["engine"]]
+	if engineLong == "" {
+		engineLong = "Percona"
+	}
+	op := "backup"
+	if strings.HasPrefix(f.Rule, "restore.") {
+		op = "restore"
+	}
+	fmt.Fprintf(&b, "I'm investigating a %s %s.\n\n", engineLong, op)
+	if f.Name != "" {
+		fmt.Fprintf(&b, "%s name: %s\n", strings.Title(op), f.Name)
+	}
+	if f.Namespace != "" {
+		fmt.Fprintf(&b, "Namespace: %s\n", f.Namespace)
+	}
+	// Whitelist of safe fields. The destination is already truncated upstream.
+	writeFields(&b, f, []string{
+		"engine", "cluster", "status", "started", "completed",
+		"storage", "destination", "line",
+	})
+	fmt.Fprintf(&b, "Detected rule: %s\n", f.Rule)
+	if f.Detail != "" {
+		fmt.Fprintf(&b, "Excerpt: %s\n", f.Detail)
+	}
+	b.WriteByte('\n')
+	switch f.Rule {
+	case "backup.failed", "restore.failed":
+		b.WriteString("What does this kind of " + op + " failure typically mean for this operator, what are the most common causes (storage, credentials, network, version skew), and what should I check next in the operator and pod logs?")
+	case "backup.running", "restore.running":
+		b.WriteString("The " + op + " did not reach a terminal status before the dump. Is that expected mid-flight, or does it usually indicate a stuck job?")
+	case "backup.unknown_status", "restore.unknown_status":
+		b.WriteString("There is log/event evidence but no resolved status. What does that pattern usually point to, and where should I look first?")
+	case "backup.log_error":
+		b.WriteString("The backup pod logs report an error. What are the common root causes and the right order to debug them?")
+	case "backup.pgbackrest_warning":
+		b.WriteString("pgBackRest emitted a warning even though the CRD reports success. Is this safe to ignore, and how do I tell?")
+	case "backup.xtrabackup_warning":
+		b.WriteString("xtrabackup emitted a warning. Is this benign during normal SST, or does it indicate a real issue?")
+	case "backup.pbm_warning":
+		b.WriteString("Percona Backup for MongoDB emitted a warning. What do typical PBM warnings indicate?")
+	case "backup.cr_log_mismatch":
+		b.WriteString("The CRD-reported status and the log evidence disagree. Which is usually authoritative, and how do I tell which event sequence is correct?")
+	case "backup.storage_missing", "backup.destination_missing":
+		b.WriteString("The backup CRD has no storage or destination recorded. What does that usually mean — operator not finished reconciling, or a real misconfiguration?")
+	default:
+		b.WriteString("What does this typically mean and what should I check next?")
+	}
+	return b.String()
+}
+
 func pxcLogPrompt(f Finding) string {
 	var b strings.Builder
 	b.WriteString("I'm investigating a Percona XtraDB Cluster log event.\n\n")
@@ -277,6 +339,31 @@ func buildGoogleURL(f Finding) string {
 	}
 
 	switch family(f.Rule) {
+	case "backup":
+		engineLong := map[string]string{
+			"pxc":      "xtrabackup",
+			"postgres": "pgBackRest",
+			"mongodb":  "Percona Backup for MongoDB",
+			"everest":  "Percona Everest",
+		}[f.Fields["engine"]]
+		if engineLong != "" {
+			add(engineLong)
+		}
+		switch f.Rule {
+		case "backup.failed", "restore.failed":
+			add("failed")
+		case "backup.log_error":
+			add("error")
+		case "backup.pgbackrest_warning", "backup.xtrabackup_warning", "backup.pbm_warning", "backup.log_warning":
+			add("warning")
+		case "backup.cr_log_mismatch":
+			add("status mismatch")
+		case "backup.storage_missing":
+			add("storageName missing")
+		case "backup.destination_missing":
+			add("destination empty")
+		}
+		add(messageKeywords(f.Detail))
 	case "pxc_log":
 		add("Percona XtraDB Cluster")
 		add("Galera")

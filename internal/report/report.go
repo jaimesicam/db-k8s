@@ -140,6 +140,11 @@ func Generate(d *db.DB, outDir string) (Stats, error) {
 	}
 	stats.Pages++
 
+	if err := writeBackups(absOut, analysis.Backup, dumpRoot, rawPaths, fileRel, generatedAt); err != nil {
+		return stats, err
+	}
+	stats.Pages++
+
 	for _, dp := range dumps {
 		pageCount, err := writeDumpPage(absOut, d, dp, rawPaths, analysis, generatedAt)
 		if err != nil {
@@ -328,6 +333,13 @@ type indexData struct {
 	PXCEvents   int
 	PXCWarnings int
 	PXCErrors   int
+
+	BackupTotal     int
+	BackupSucceeded int
+	BackupFailed    int
+	BackupRunning   int
+	BackupPending   int
+	BackupUnknown   int
 }
 
 func writeIndex(outDir string, d *db.DB, dumps []db.Dump, files []db.File,
@@ -373,6 +385,21 @@ func writeIndex(outDir string, d *db.DB, dumps []db.Dump, files []db.File,
 		PXCEvents:   pxcEvents,
 		PXCWarnings: pxcWarn,
 		PXCErrors:   pxcErr,
+	}
+	for _, op := range analysis.Backup.Operations {
+		data.BackupTotal++
+		switch string(op.Status) {
+		case "Succeeded":
+			data.BackupSucceeded++
+		case "Failed":
+			data.BackupFailed++
+		case "Running":
+			data.BackupRunning++
+		case "Pending":
+			data.BackupPending++
+		default:
+			data.BackupUnknown++
+		}
 	}
 	return renderToFile(filepath.Join(outDir, "index.html"), tmplIndex, data)
 }
@@ -562,6 +589,7 @@ type dumpPage struct {
 	Findings []findingRow
 
 	HasPXCTimeline bool
+	HasBackups     bool
 }
 
 func writeDumpPage(outDir string, d *db.DB, dp db.Dump, rawPaths map[int64]string,
@@ -594,6 +622,13 @@ func writeDumpPage(outDir string, d *db.DB, dp db.Dump, rawPaths map[int64]strin
 			break
 		}
 	}
+	hasBackups := false
+	for _, op := range analysis.Backup.Operations {
+		if op.DumpID == dp.ID {
+			hasBackups = true
+			break
+		}
+	}
 	data := dumpPage{
 		Title: fmt.Sprintf("Dump %d", dp.ID), Nav: "index", AssetBase: "../",
 		GeneratedAt: generatedAt, Dump: dp, FileCount: c, Bytes: b,
@@ -603,6 +638,7 @@ func writeDumpPage(outDir string, d *db.DB, dp db.Dump, rawPaths map[int64]strin
 		Info:     sc[analyze.SeverityInfo],
 		Findings: findings,
 		HasPXCTimeline: hasTL,
+		HasBackups:     hasBackups,
 	}
 	dst := filepath.Join(outDir, "dumps", fmt.Sprintf("dump-%d.html", dp.ID))
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
@@ -630,6 +666,8 @@ type filePage struct {
 
 	Summary  string
 	Findings []findingRow
+
+	BackupContributions []bkContribRow
 }
 
 func writeFilePage(outDir string, d *db.DB, f db.File, rawHref string,
@@ -661,6 +699,7 @@ func writeFilePage(outDir string, d *db.DB, f db.File, rawHref string,
 			page.Findings = append(page.Findings, toFindingRow(finding, "../"))
 		}
 	}
+	page.BackupContributions = fileBackupContributions(f.ID, analysis.Backup)
 	dst := filepath.Join(outDir, "files", fmt.Sprintf("file-%d.html", f.ID))
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
